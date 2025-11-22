@@ -88,6 +88,8 @@ void getRTCTime(struct tm *timeinfo);
 void syncRTCfromNTP();
 void loadRainfallData();
 void saveRainfallData();
+
+// --- Write and Read EEPROM Prototypes ---
 void writeEEPROMFloat(int memAddr, float data);
 float readEEPROMFloat(int memAddr);
 void writeEEPROMInt(int memAddr, int data);
