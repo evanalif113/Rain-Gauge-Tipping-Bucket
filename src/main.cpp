@@ -13,7 +13,7 @@
 // -----------------------------------------------------------------
 const int PIN_HUJAN = 5;          // Pin GPIO Sensor (Pastikan kabel satunya ke GND)
 const float MM_PER_TIP = 0.2794;  // Nilai Kalibrasi (Default pabrik biasanya segini)
-const long DEBOUNCE_MS = 100;     // Jeda waktu anti-getaran (ms)
+const long DEBOUNCE_MS = 200;     // Jeda waktu anti-getaran (ms)
 
 // Pengaturan OLED
 #define SCREEN_WIDTH 128
