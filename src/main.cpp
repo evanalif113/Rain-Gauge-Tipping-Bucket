@@ -1,50 +1,127 @@
 /*
- * KODE WEATHER STATION (RAIN GAUGE) ESP32 - BERSIH & STABIL
- * Hardware: ESP32, SSD1306 OLED (I2C), Rain Gauge (Tipping Bucket)
- * By: Gemini (Fixed Version)
+ * KODE WEATHER STATION - CALIBRATION MODE (RAW DATA)
+ * Fitur: 
+ * - Fokus mencatat Tip Count & Interval
+ * - Tabel Web lebih simpel (Tip ke-X, Jam, Interval)
+ * - Export Excel (.csv) otomatis menyesuaikan
  */
 
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <RTClib.h> 
 
-// -----------------------------------------------------------------
-// KONFIGURASI
-// -----------------------------------------------------------------
-const int PIN_HUJAN = 5;          // Pin GPIO Sensor (Pastikan kabel satunya ke GND)
-const float MM_PER_TIP = 0.2794;  // Nilai Kalibrasi (Default pabrik biasanya segini)
-const long DEBOUNCE_MS = 200;     // Jeda waktu anti-getaran (ms)
+// --- KONFIGURASI WIFI ---
+const char* ssid = "server";     
+const char* password = "jeris6467";  
 
-// Pengaturan OLED
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET -1
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+const int PIN_HUJAN = 5;
+const long DEBOUNCE_MS = 200;
+const int MAX_LOGS = 150; // Saya naikkan dikit biar muat lebih banyak data
 
-void updateDisplay(); // Prototipe fungsi tampilan
+// --- OBJEK HARDWARE ---
+Adafruit_SSD1306 display(128, 64, &Wire, -1);
+RTC_DS3231 rtc; 
+WebServer server(80);
 
-// -----------------------------------------------------------------
-// VARIABEL
-// -----------------------------------------------------------------
-// Variabel Interrupt (Harus volatile agar tersimpan di RAM dengan benar saat ISR)
+void updateDisplay();
+
+// --- STRUKTUR DATA LOG (YANG BARU) ---
+struct LogData {
+  int tip_ke;       // Tip ke berapa
+  String jam;       // Waktu kejadian
+  String interval;  // Selisih waktu
+};
+
+LogData history[MAX_LOGS]; 
+int logCount = 0;          
+
+// --- VARIABEL GLOBAL ---
 volatile unsigned int isrTipCount = 0;
-volatile unsigned long lastTipTime = 0;
+volatile unsigned long lastTipTimeMs = 0;
 
-// Variabel Utama
-unsigned long totalTips = 0;      // Total jungkitan sejak nyala
-float totalRainfall = 0.000;        // Total hujan dalam mm
+unsigned long totalTips = 0;
+DateTime lastTipTimestamp;
 
-// -----------------------------------------------------------------
-// FUNGSI INTERRUPT (ISR)
-// Menangani sinyal dari sensor secepat kilat
-// -----------------------------------------------------------------
+// --- ISR ---
 void IRAM_ATTR handleRainTip() {
   unsigned long now = millis();
-  // Debounce: Hanya hitung jika jarak antar sinyal > 100ms
-  if (now - lastTipTime > DEBOUNCE_MS) {
+  if (now - lastTipTimeMs > DEBOUNCE_MS) {
     isrTipCount++;
-    lastTipTime = now;
+    lastTipTimeMs = now;
   }
+}
+
+// --- FUNGSI RESET DATA ---
+void handleReset() {
+  totalTips = 0;
+  logCount = 0; 
+  server.send(200, "text/html", "<h1>Data Reset Berhasil!</h1><a href='/'>Kembali</a>");
+  updateDisplay();
+}
+
+// --- FUNGSI WEB SERVER UTAMA ---
+void handleRoot() {
+  String html = "<!DOCTYPE html><html><head>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
+  html += "<title>Rain Gauge Raw Data</title>";
+  html += "<style>";
+  html += "body{font-family:Arial; text-align:center; margin:20px;}";
+  html += "table{width:100%; border-collapse:collapse; margin-top:20px;}";
+  html += "th, td{border:1px solid #ddd; padding:8px; text-align:center;}";
+  html += "th{background-color:#28a745; color:white;}"; // Warna Hijau biar fresh
+  html += "tr:nth-child(even){background-color:#f2f2f2;}";
+  html += ".btn{background:#007bff; color:white; padding:10px 20px; text-decoration:none; border-radius:5px; margin:5px; display:inline-block; cursor:pointer; border:none;}";
+  html += ".btn-reset{background:#dc3545;}";
+  html += "</style>";
+  
+  // JS Download CSV
+  html += "<script>";
+  html += "function downloadCSV() {";
+  html += "  var csv = [];";
+  html += "  var rows = document.querySelectorAll('table tr');";
+  html += "  for (var i = 0; i < rows.length; i++) {";
+  html += "    var row = [], cols = rows[i].querySelectorAll('td, th');";
+  html += "    for (var j = 0; j < cols.length; j++) row.push(cols[j].innerText);";
+  html += "    csv.push(row.join(','));";
+  html += "  }";
+  html += "  var csvFile = new Blob([csv.join('\\n')], {type: 'text/csv'});";
+  html += "  var downloadLink = document.createElement('a');";
+  html += "  downloadLink.download = 'raw_data_kalibrasi.csv';";
+  html += "  downloadLink.href = window.URL.createObjectURL(csvFile);";
+  html += "  downloadLink.style.display = 'none';";
+  html += "  document.body.appendChild(downloadLink);";
+  html += "  downloadLink.click();";
+  html += "}";
+  html += "</script>";
+  
+  html += "</head><body>";
+  
+  html += "<h1>Data Mentah Kalibrasi</h1>";
+  html += "<h3>Total Tips: " + String(totalTips) + "</h3>";
+  
+  html += "<button class='btn' onclick='downloadCSV()'>Download Excel (.csv)</button>";
+  html += "<a href='/' class='btn' style='background:#6c757d;'>Refresh</a>";
+  html += "<a href='/reset' class='btn btn-reset' onclick=\"return confirm('Yakin hapus data?')\">Reset Data</a>";
+
+  // --- TABEL SIMPEL (SESUAI REQUEST) ---
+  html += "<table>";
+  html += "<tr><th>Tip Ke-</th><th>Waktu (Jam)</th><th>Interval (Detik)</th></tr>";
+  
+  for(int i=0; i<logCount; i++) {
+    html += "<tr>";
+    html += "<td>" + String(history[i].tip_ke) + "</td>";
+    html += "<td>" + history[i].jam + "</td>";
+    html += "<td>" + history[i].interval + "</td>";
+    html += "</tr>";
+  }
+  
+  html += "</table>";
+  html += "</body></html>";
+
+  server.send(200, "text/html", html);
 }
 
 // -----------------------------------------------------------------
@@ -52,91 +129,87 @@ void IRAM_ATTR handleRainTip() {
 // -----------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { for(;;); }
+  display.clearDisplay(); display.setTextColor(SSD1306_WHITE);
   
-  // 1. Inisialisasi OLED
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Cek alamat I2C, biasanya 0x3C atau 0x3D
-    Serial.println(F("OLED Gagal! Cek kabel SDA/SCL."));
-    for (;;); // Berhenti di sini jika gagal
-  }
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-  display.setTextSize(1);
-  display.setCursor(0,0);
-  display.println("Rain Gauge v1.0");
-  display.println("Menunggu hujan...");
-  display.display();
+  if (!rtc.begin()) { while (1); }
+  lastTipTimestamp = rtc.now(); 
 
-  // 2. Inisialisasi Pin
-  // Menggunakan INPUT_PULLUP agar kita tidak butuh resistor eksternal.
-  // Cara pasang: 1 kabel sensor ke Pin 5, 1 kabel sensor ke GND.
-  pinMode(PIN_HUJAN, INPUT); 
+  WiFi.begin(ssid, password);
+  display.setCursor(0,0); display.println("Connect WiFi..."); display.display();
+  while (WiFi.status() != WL_CONNECTED) { delay(500); }
+  
+  server.on("/", handleRoot);
+  server.on("/reset", handleReset);
+  server.begin();
 
-  // 3. Pasang Interrupt
+  pinMode(PIN_HUJAN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(PIN_HUJAN), handleRainTip, FALLING);
-  
-  delay(1000);
-  updateDisplay(); // Tampilkan layar awal (0 mm)
+
+  updateDisplay();
 }
 
 // -----------------------------------------------------------------
-// LOOP UTAMA
+// LOOP
 // -----------------------------------------------------------------
 void loop() {
-  // Cek apakah ada data baru dari interrupt
-  unsigned int tipsToProcess = 0;
+  server.handleClient();
 
-  // Matikan interrupt sebentar untuk membaca data volatile dengan aman
+  unsigned int tipsToProcess = 0;
   noInterrupts();
   if (isrTipCount > 0) {
     tipsToProcess = isrTipCount;
-    isrTipCount = 0; // Reset counter interrupt
+    isrTipCount = 0;
   }
   interrupts();
 
-  // Jika ada tip baru, proses datanya
   if (tipsToProcess > 0) {
-    // Hitung matematika
+    DateTime now = rtc.now();
+    TimeSpan diff = now - lastTipTimestamp;
+    
+    // Format Interval (HH:MM:SS)
+    char bufInt[20];
+    sprintf(bufInt, "%02d:%02d:%02d", diff.hours(), diff.minutes(), diff.seconds());
+    
+    // Format Waktu Kejadian
+    char bufJam[20];
+    sprintf(bufJam, "%02d:%02d:%02d", now.hour(), now.minute(), now.second());
+
+    lastTipTimestamp = now;
     totalTips += tipsToProcess;
-    totalRainfall += (tipsToProcess * MM_PER_TIP);
 
-    // Kirim ke Serial Monitor (untuk debug di laptop)
-    Serial.print("Tip Terdeteksi! Total Tips: ");
-    Serial.print(totalTips);
-    Serial.print(" | Curah Hujan: ");
-    Serial.print(totalRainfall, 4);
-    Serial.println(" mm");
+    // --- SIMPAN KE LOG (VERSI SIMPEL) ---
+    if (logCount < MAX_LOGS) {
+      history[logCount].tip_ke = totalTips;
+      history[logCount].jam = String(bufJam);
+      history[logCount].interval = String(bufInt);
+      logCount++;
+    }
 
-    // Update Layar OLED
     updateDisplay();
   }
 }
 
 // -----------------------------------------------------------------
-// FUNGSI TAMPILAN OLED
+// UPDATE OLED
 // -----------------------------------------------------------------
 void updateDisplay() {
   display.clearDisplay();
-
-  // Header
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.print("RAIN GAUGE MONITOR");
-  display.drawLine(0, 10, 128, 10, SSD1306_WHITE); // Garis pemisah
-
-  // Menampilkan Milimeter (Besar)
-  display.setCursor(0, 15);
-  display.print("Curah Hujan:");
   
-  display.setTextSize(2); // Huruf Besar
-  display.setCursor(0, 28);
-  display.print(totalRainfall, 4); // 4 angka belakang koma
+  // Header IP
   display.setTextSize(1);
-  display.print(" mm");
+  display.setCursor(0, 0); display.print("IP: "); display.println(WiFi.localIP());
+  display.drawLine(0, 9, 128, 9, SSD1306_WHITE);
 
-  // Menampilkan Total Tips (Kecil di bawah)
-  display.setCursor(0, 50);
-  display.print("Total Tips: ");
-  display.print(totalTips);
-
+  // Info Utama: Total Tips
+  display.setCursor(0, 20); display.print("TOTAL TIPS:");
+  display.setTextSize(3); // Angka Gede banget biar kebaca pas kalibrasi
+  display.setCursor(0, 35); display.print(totalTips);
+  
+  // Info Memory Log
+  display.setTextSize(1);
+  display.setCursor(80, 55); display.print("Log:"); display.print(logCount);
+  
   display.display();
 }
